@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    
+        <script>
+            L_NO_TOUCH = false;
+            L_DISABLE_3D = false;
+        </script>
+    
+    <style>html, body {width: 100%;height: 100%;margin: 0;padding: 0;}</style>
+    <style>#map {position:absolute;top:0;bottom:0;right:0;left:0;}</style>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
+    
+            <meta name="viewport" content="width=device-width,
+                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <style>
+                #map_12aabf9386ab00073bca5be81ce41cd8 {
+                    position: relative;
+                    width: 100.0%;
+                    height: 100.0%;
+                    left: 0.0%;
+                    top: 0.0%;
+                }
+                .leaflet-container { font-size: 1rem; }
+            </style>
+        
+    <script src="https://cdn.jsdelivr.net/gh/python-visualization/folium@main/folium/templates/leaflet_heat.min.js"></script>
+</head>
+<body>
+    
+    
+            <div class="folium-map" id="map_12aabf9386ab00073bca5be81ce41cd8" ></div>
+        
+</body>
+<script>
+    
+    
+            var map_12aabf9386ab00073bca5be81ce41cd8 = L.map(
+                "map_12aabf9386ab00073bca5be81ce41cd8",
+                {
+                    center: [42.32373908290052, -71.08351020020258],
+                    crs: L.CRS.EPSG3857,
+                    zoom: 12,
+                    zoomControl: true,
+                    preferCanvas: false,
+                    title: "Map of BREAKING AND ENTERING (B\u0026E) MOTOR VEHICLE (NO PROPERTY STOLEN)",
+                }
+            );
+
+            
+
+        
+    
+            var tile_layer_e49d19e3e49f213c154e05770b393c5a = L.tileLayer(
+                "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                {"attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors", "detectRetina": false, "maxNativeZoom": 19, "maxZoom": 19, "minZoom": 0, "noWrap": false, "opacity": 1, "subdomains": "abc", "tms": false}
+            );
+        
+    
+            tile_layer_e49d19e3e49f213c154e05770b393c5a.addTo(map_12aabf9386ab00073bca5be81ce41cd8);
+        
+    
+            var heat_map_bea6fe800e80df2a47aa3d2006cd520e = L.heatLayer(
+                [[42.27028545229152, -71.16534845171428], [42.28709320338153, -71.14822209118665], [42.29714485653838, -71.07409589528018], [42.342279761898126, -71.04676413232758], [42.290456184902965, -71.09355356470891], [42.24200962176958, -71.13464544977822], [42.33182915153577, -71.07347327417558], [42.269320665397785, -71.17205028334226], [42.33354483190281, -71.10504655008135], [42.3004082842596, -71.10813020675202], [42.256215542554976, -71.12402029533455], [42.27490930614068, -71.08945027388586], [42.29746561915284, -71.0827437317038]],
+                {"blur": 15, "maxZoom": 18, "minOpacity": 0.5, "radius": 25}
+            );
+        
+    
+            heat_map_bea6fe800e80df2a47aa3d2006cd520e.addTo(map_12aabf9386ab00073bca5be81ce41cd8);
+        
+</script>
+</html>

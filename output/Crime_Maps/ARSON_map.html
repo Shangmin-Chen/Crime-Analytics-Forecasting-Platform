@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    
+        <script>
+            L_NO_TOUCH = false;
+            L_DISABLE_3D = false;
+        </script>
+    
+    <style>html, body {width: 100%;height: 100%;margin: 0;padding: 0;}</style>
+    <style>#map {position:absolute;top:0;bottom:0;right:0;left:0;}</style>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
+    
+            <meta name="viewport" content="width=device-width,
+                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <style>
+                #map_aca46a5953a678e8f974be7339cf5a0d {
+                    position: relative;
+                    width: 100.0%;
+                    height: 100.0%;
+                    left: 0.0%;
+                    top: 0.0%;
+                }
+                .leaflet-container { font-size: 1rem; }
+            </style>
+        
+    <script src="https://cdn.jsdelivr.net/gh/python-visualization/folium@main/folium/templates/leaflet_heat.min.js"></script>
+</head>
+<body>
+    
+    
+            <div class="folium-map" id="map_aca46a5953a678e8f974be7339cf5a0d" ></div>
+        
+</body>
+<script>
+    
+    
+            var map_aca46a5953a678e8f974be7339cf5a0d = L.map(
+                "map_aca46a5953a678e8f974be7339cf5a0d",
+                {
+                    center: [42.32373908290052, -71.08351020020258],
+                    crs: L.CRS.EPSG3857,
+                    zoom: 12,
+                    zoomControl: true,
+                    preferCanvas: false,
+                    title: "Map of ARSON",
+                }
+            );
+
+            
+
+        
+    
+            var tile_layer_2a11182e86edf73eb80c787b51afb514 = L.tileLayer(
+                "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                {"attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors", "detectRetina": false, "maxNativeZoom": 19, "maxZoom": 19, "minZoom": 0, "noWrap": false, "opacity": 1, "subdomains": "abc", "tms": false}
+            );
+        
+    
+            tile_layer_2a11182e86edf73eb80c787b51afb514.addTo(map_aca46a5953a678e8f974be7339cf5a0d);
+        
+    
+            var heat_map_cea6401d7d32b65a9ec3636961b42098 = L.heatLayer(
+                [[42.349069350428856, -71.15679193720102], [42.34425742351299, -71.14383687667993], [42.35678395325911, -71.06670891275323], [42.300809530190136, -71.0670512540682], [42.28485565746177, -71.09365818659177], [42.36001423779012, -71.04930452781426], [42.36233402251364, -71.13838199250011], [42.33260351655299, -71.07202459199436], [42.36436044239473, -71.05330669379252], [42.32872544225124, -71.08382273879404], [42.356800272786785, -71.05893069821927], [42.34862336851335, -71.08277689315231], [42.31800259080805, -71.06480584412138], [42.34968249648551, -71.06656152310168], [42.312008243357006, -71.08295485657528], [42.32094174176391, -71.06931884208619], [42.37964844692379, -71.06880994858793], [42.35447603996461, -71.04539648350287], [42.26070611228696, -71.1577146867135], [42.29350226111674, -71.0734492401393], [42.37620216335869, -71.03979962591616], [42.270656524985455, -71.09377913288601], [42.28836072926215, -71.0952840329189], [42.3561967187637, -71.13462935190391], [42.379162376228955, -71.05728581790834], [42.3668929731956, -71.04130360674084], [42.308546802110875, -71.05821274776288], [42.34425742351299, -71.14383687667993], [42.36439207812334, -71.060932290841], [42.351410362609826, -71.07920905802212], [42.34873494591326, -71.07049234223773], [42.37620216335869, -71.03979962591616], [42.28295073737715, -71.09377611051099]],
+                {"blur": 15, "maxZoom": 18, "minOpacity": 0.5, "radius": 25}
+            );
+        
+    
+            heat_map_cea6401d7d32b65a9ec3636961b42098.addTo(map_aca46a5953a678e8f974be7339cf5a0d);
+        
+</script>
+</html>

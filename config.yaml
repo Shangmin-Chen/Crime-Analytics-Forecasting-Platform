@@ -1,0 +1,40 @@
+# Configuration file for Boston Crime Mapper training parameters
+
+training:
+  # Use fixed dates for reproducibility, or dynamic dates based on available data
+  use_fixed_dates: false
+  
+  # Fixed dates (used when use_fixed_dates: true)
+  # These correspond to the original historical data period
+  train_start: "2023-01-01"
+  train_end: "2024-05-31"  # Training through end of May 2024
+  test_end: "2024-10-31"   # Test through end of October 2024
+  
+  # Dynamic date calculation (used when use_fixed_dates: false)
+  # These ratios determine how to split the available data
+  train_ratio: 0.8   # Use 80% of data for training
+  test_ratio: 0.15   # Use 15% of data for testing (remaining 5% is buffer)
+
+forecasting:
+  # Future forecast period configuration
+  future_months: 2           # Number of months to forecast into the future
+  forecast_start_offset_days: 1  # Days after latest data to start forecast
+
+model:
+  # Prophet model parameters
+  yearly_seasonality: true
+  weekly_seasonality: true
+  daily_seasonality: false
+  
+  # Minimum training data requirements
+  min_training_records: 10   # Minimum records needed to train a model
+
+data:
+  # Data file paths
+  crime_data_file: "data/Boston Data.csv"
+  offense_codes_file: "data/RMS Offense Codes.xlsx"
+  
+  # Data validation
+  validate_on_load: true
+  check_freshness: true
+

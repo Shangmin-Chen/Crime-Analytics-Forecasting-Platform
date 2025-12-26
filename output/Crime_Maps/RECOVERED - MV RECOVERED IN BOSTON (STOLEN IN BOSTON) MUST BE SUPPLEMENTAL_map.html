@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    
+        <script>
+            L_NO_TOUCH = false;
+            L_DISABLE_3D = false;
+        </script>
+    
+    <style>html, body {width: 100%;height: 100%;margin: 0;padding: 0;}</style>
+    <style>#map {position:absolute;top:0;bottom:0;right:0;left:0;}</style>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
+    
+            <meta name="viewport" content="width=device-width,
+                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <style>
+                #map_7df7c9ed70999c3bc74f57f48efd599b {
+                    position: relative;
+                    width: 100.0%;
+                    height: 100.0%;
+                    left: 0.0%;
+                    top: 0.0%;
+                }
+                .leaflet-container { font-size: 1rem; }
+            </style>
+        
+    <script src="https://cdn.jsdelivr.net/gh/python-visualization/folium@main/folium/templates/leaflet_heat.min.js"></script>
+</head>
+<body>
+    
+    
+            <div class="folium-map" id="map_7df7c9ed70999c3bc74f57f48efd599b" ></div>
+        
+</body>
+<script>
+    
+    
+            var map_7df7c9ed70999c3bc74f57f48efd599b = L.map(
+                "map_7df7c9ed70999c3bc74f57f48efd599b",
+                {
+                    center: [42.32373908290052, -71.08351020020258],
+                    crs: L.CRS.EPSG3857,
+                    zoom: 12,
+                    zoomControl: true,
+                    preferCanvas: false,
+                    title: "Map of RECOVERED - MV RECOVERED IN BOSTON (STOLEN IN BOSTON) MUST BE SUPPLEMENTAL",
+                }
+            );
+
+            
+
+        
+    
+            var tile_layer_b4ab5671c3021e786022670478c35b31 = L.tileLayer(
+                "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                {"attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors", "detectRetina": false, "maxNativeZoom": 19, "maxZoom": 19, "minZoom": 0, "noWrap": false, "opacity": 1, "subdomains": "abc", "tms": false}
+            );
+        
+    
+            tile_layer_b4ab5671c3021e786022670478c35b31.addTo(map_7df7c9ed70999c3bc74f57f48efd599b);
+        
+    
+            var heat_map_8f9526a781390b4afee7a466fc47e497 = L.heatLayer(
+                [[42.277920569946545, -71.08224770982578], [42.28406941353607, -71.08824988085483], [42.283146738916166, -71.11374225658426], [42.29344558755396, -71.08299361872523], [42.33954152609665, -71.06940928222296], [42.31920465694689, -71.06676858013556], [42.27538950390626, -71.1403619882131], [42.32136454276689, -71.0722076089526], [42.30201158633495, -71.08155665480025], [42.29944171580123, -71.08489811932239], [42.303792894783165, -71.08183698009842], [42.31324715822342, -71.08692664026557], [42.29861773715681, -71.07119342016259], [42.27064163483075, -71.0958798046689], [42.31525460179723, -71.102282640036], [42.30339054876143, -71.08527261101504], [42.29244132776408, -71.07320758344754], [42.33954152609665, -71.06940928222296], [42.32853484068592, -71.0821393030554], [42.33954152609665, -71.06940928222296], [42.3896973185407, -71.00957121730941], [42.38172751751863, -71.01646584424772], [42.33796838954432, -71.06408260603973], [42.297554856340426, -71.05970968687002], [42.328563547412635, -71.06835396691433], [42.32866239451696, -71.08563458516488], [42.27919103496657, -71.0661397068275], [42.30576641291201, -71.08097578849147], [42.30846758861165, -71.08327756040336], [42.339434241466606, -71.08179819488035], [42.35478240077003, -71.13598774019702], [42.32553754017519, -71.06579645470285], [42.35202226950583, -71.05932046123007], [42.28482533772862, -71.09137437366408], [42.34634268091499, -71.08482065969673], [42.336111501898934, -71.04665481129499], [42.33954152609665, -71.06940928222296], [42.32129957236793, -71.08567859226272], [42.28079615227066, -71.09039792671335], [42.34997208975044, -71.06348864456444], [42.28289391785303, -71.0809681155649], [42.297554856340426, -71.05970968687002], [42.29077053711963, -71.08406570232025], [42.312842436112994, -71.08101044861554], [42.338828982184246, -71.06600675271858], [42.32022756920211, -71.06108756131029], [42.346175868581334, -71.06471109963327], [42.314534553582554, -71.09381967416184], [42.28709320338153, -71.14822209118665], [42.33843958567686, -71.09731055392137], [42.33954152609665, -71.06940928222296], [42.33796838954432, -71.06408260603973], [42.3300745291587, -71.06962254628846], [42.28285508272559, -71.07782687896893], [42.30798749789914, -71.06939855491605]],
+                {"blur": 15, "maxZoom": 18, "minOpacity": 0.5, "radius": 25}
+            );
+        
+    
+            heat_map_8f9526a781390b4afee7a466fc47e497.addTo(map_7df7c9ed70999c3bc74f57f48efd599b);
+        
+</script>
+</html>

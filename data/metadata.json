@@ -1,0 +1,27 @@
+{
+  "last_updated": "2025-12-25T16:06:41.194965",
+  "date_range": {
+    "start": "2023-01-01",
+    "end": "2025-04-04",
+    "total_days": 824
+  },
+  "total_records": 174421,
+  "districts": [
+    "A1",
+    "A15",
+    "A7",
+    "B2",
+    "B3",
+    "C11",
+    "C6",
+    "D14",
+    "D4",
+    "E13",
+    "E18",
+    "E5",
+    "External",
+    "Outside of"
+  ],
+  "data_source": "Boston.gov CKAN API",
+  "resource_id": "b973d8cb-eeb2-4e7e-99da-c92938efc9c0"
+}

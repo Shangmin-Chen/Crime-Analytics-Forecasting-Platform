@@ -1,2 +1,7 @@
-forecasts/
+output/forecasts/
 venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python

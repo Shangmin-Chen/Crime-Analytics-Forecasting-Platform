@@ -1,7 +1,63 @@
-output/forecasts/
-venv/
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Virtual Environment
+venv/
+
+# Generated Output Files
+output/forecasts/
+output/Crime_Maps/
+images/
+*.joblib
+
+# System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter Notebook Artifacts
+.ipynb_checkpoints/
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.spyderproject
+.spyproject
+.ropeproject/
+
+# Environment and Configuration
+.env
+.env.local
+.env.*.local
+
+# Streamlit
+.streamlit/
+
+# Logs
+*.log
+logs/
+
+# Compiled Extensions
+*.so
+*.dylib
+*.dll
+
+# Other
+.python-version
+pip-log.txt
+pip-delete-this-directory.txt

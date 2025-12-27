@@ -295,11 +295,19 @@ def render_sidebar():
         # Methodology
         with st.expander("🔬 Methodology", expanded=False):
             st.markdown("""
-            **Forecasting Model: Prophet**
+            **Forecasting Model: Prophet (Enhanced)**
             - Additive time-series model designed for business forecasting
             - Captures yearly and weekly seasonality patterns
+            - **Includes US federal holiday effects** (New Year's, Independence Day, Thanksgiving, etc.)
+            - **Retrains on full dataset** (train + test) before making production forecasts
             - Provides confidence intervals for uncertainty quantification
             - Well-suited for crime data with periodic patterns
+            
+            **Model Improvements:**
+            - Uses multiple evaluation metrics (MAE, RMSE, MAPE, Coverage)
+            - Compares performance against naive baseline forecasts
+            - Handles outliers to improve model stability
+            - Configurable hyperparameters for optimization
             
             **Clustering Algorithm: DBSCAN**
             - Density-based clustering to identify hotspots
@@ -312,17 +320,29 @@ def render_sidebar():
             - Geographic filtering removes invalid coordinates
             - Temporal aggregation to daily counts for forecasting
             - Dynamic date splitting (80% train, 15% test, 5% buffer)
+            - Outlier detection using z-score (3 standard deviations)
             """)
         
         # Glossary
         with st.expander("📚 Glossary", expanded=False):
             st.markdown("""
-            - **Confidence Intervals**: Range of likely values around the prediction (e.g., 80% confidence that actual value falls within the range)
+            **Forecasting Terms:**
+            - **MAE (Mean Absolute Error)**: Average difference between predicted and actual values. Lower is better.
+            - **RMSE (Root Mean Square Error)**: Similar to MAE but penalizes large errors more. Lower is better.
+            - **MAPE (Mean Absolute Percentage Error)**: Relative error as a percentage. Lower is better.
+            - **Coverage**: Percentage of actual values within the prediction interval (should be ~95% for 95% intervals)
+            - **Naive Baseline**: Simple forecast using the last observed value
+            - **Improvement over Baseline**: Percentage reduction in error compared to naive forecast
+            
+            **General Terms:**
+            - **Confidence Intervals**: Range of likely values around the prediction
             - **Seasonality**: Recurring patterns over time (weekly, yearly cycles)
             - **Hotspots**: Geographic areas with high crime density
             - **Clusters**: Groups of nearby crime incidents identified by DBSCAN
             - **Forecast Period**: Future time range for predictions (2 months)
             - **Test Period**: Historical period used to evaluate model accuracy
+            - **Outliers**: Data points that deviate significantly from typical patterns
+            - **Retraining**: Training model on all available data before production use
             """)
         
         # Help & FAQ
@@ -339,13 +359,36 @@ def render_sidebar():
             - Confidence intervals indicate uncertainty
             - Use forecasts for planning, not exact predictions
             
+            **What are the different error metrics?**
+            - **MAE**: Simple average of errors (easy to interpret)
+            - **RMSE**: Penalizes large errors more (better for detecting poor fits)
+            - **MAPE**: Shows error as percentage (good for comparing across districts)
+            - **Coverage**: Validates that uncertainty estimates are realistic
+            
             **How accurate are the forecasts?**
             - Accuracy varies by district and crime type
-            - Check the "Actual vs Predicted" comparison
-            - Forecasts are more reliable for districts with stable patterns
+            - Check the "improvement over baseline" metric
+            - Districts with positive improvement (>0%) have reliable forecasts
+            - Districts with negative improvement may have irregular patterns
+            
+            **What does "worse than baseline" mean?**
+            When a model performs worse than the naive baseline, it means simply using the last 
+            observed value would be more accurate. This suggests:
+            - Crime patterns in that district are highly irregular
+            - Recent changes in trends the model hasn't captured
+            - Insufficient historical data for reliable forecasting
+            
+            **Why does the model retrain before production forecasts?**
+            The model initially trains on 80% of data and tests on 15% to validate accuracy. 
+            Once validated, it retrains on ALL data (train + test) to make the best possible 
+            production forecasts using every available data point.
             
             **How do I update the data?**
             Run `make update-data` in your terminal to fetch the latest data.
+            
+            **How were holidays incorporated?**
+            The model includes US federal holidays (New Year's, Memorial Day, July 4th, Labor Day, 
+            Thanksgiving, Christmas) as these can affect crime patterns.
             """)
         
         st.divider()
@@ -447,6 +490,39 @@ def run_district_analysis():
             available_districts.sort()
 
             if available_districts:
+                # Display summary metrics if available
+                summary_file = f"{forecast_dir}/summary_metrics.csv"
+                if os.path.exists(summary_file):
+                    try:
+                        summary_df = pd.read_csv(summary_file)
+                        
+                        st.markdown("---")
+                        st.subheader("📊 Overall Model Performance Across All Districts")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Average MAE", f"{summary_df['mae'].mean():.2f} crimes/day")
+                        with col2:
+                            st.metric("Average RMSE", f"{summary_df['rmse'].mean():.2f} crimes/day")
+                        with col3:
+                            st.metric("Average MAPE", f"{summary_df['mape'].mean():.2f}%")
+                        with col4:
+                            st.metric("Average Coverage", f"{summary_df['coverage'].mean()*100:.1f}%")
+                        
+                        # Show improvement
+                        avg_improvement = summary_df['improvement_pct'].mean()
+                        if avg_improvement > 0:
+                            st.success(f"✓ On average, models improve over naive baseline by {avg_improvement:.1f}%")
+                        else:
+                            st.info(f"Models perform {abs(avg_improvement):.1f}% worse than naive baseline on average")
+                        
+                        # Show best/worst districts
+                        with st.expander("📈 District Performance Ranking"):
+                            ranking = summary_df[['district', 'mae', 'rmse', 'mape', 'improvement_pct']].sort_values('mae')
+                            st.dataframe(ranking, use_container_width=True)
+                    except Exception as e:
+                        logging.warning(f"Could not load summary metrics: {e}")
+                        
                 st.markdown("---")
                 st.subheader("Select a District to View Forecasts")
                 
@@ -572,17 +648,68 @@ def run_district_analysis():
                             )
                             st.plotly_chart(test_fig, use_container_width=True)
                             
-                            # Calculate and display metrics
-                            if 'yhat' in test_results.columns and 'y' in test_results.columns:
-                                mae = np.mean(np.abs(test_results['y'] - test_results['yhat']))
-                                rmse = np.sqrt(np.mean((test_results['y'] - test_results['yhat'])**2))
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.metric("Mean Absolute Error (MAE)", f"{mae:.2f}", 
-                                              help="Average difference between predicted and actual values. Lower is better.")
-                                with col2:
-                                    st.metric("Root Mean Squared Error (RMSE)", f"{rmse:.2f}",
-                                              help="Measures the magnitude of prediction errors. Lower is better.")
+                            # Load and display comprehensive metrics from the saved file
+                            metrics_file = f"{forecast_dir}/{district}_metrics.csv"
+                            if os.path.exists(metrics_file):
+                                try:
+                                    metrics_df = pd.read_csv(metrics_file)
+                                    col1, col2, col3, col4 = st.columns(4)
+                                    with col1:
+                                        st.metric("MAE", f"{metrics_df['mae'].values[0]:.2f}", 
+                                                help="Mean Absolute Error: Average difference between predicted and actual values.")
+                                    with col2:
+                                        st.metric("RMSE", f"{metrics_df['rmse'].values[0]:.2f}",
+                                                help="Root Mean Squared Error: Penalizes large errors more heavily.")
+                                    with col3:
+                                        st.metric("MAPE", f"{metrics_df['mape'].values[0]:.2f}%",
+                                                help="Mean Absolute Percentage Error: Relative error as percentage.")
+                                    with col4:
+                                        st.metric("Coverage", f"{metrics_df['coverage'].values[0]*100:.1f}%",
+                                                help="Percentage of actual values within 95% prediction interval.")
+                                    
+                                    # Show improvement over baseline with detailed warning if poor
+                                    if 'improvement_pct' in metrics_df.columns:
+                                        improvement = metrics_df['improvement_pct'].values[0]
+                                        if improvement > 0:
+                                            st.success(f"✓ Model improves over naive baseline by {improvement:.1f}%")
+                                        else:
+                                            # Show warning message for poor performance
+                                            st.warning(f"⚠️ Model performs {abs(improvement):.1f}% worse than naive baseline")
+                                            st.error(f"""
+                                            ⚠️ **Performance Alert**: This model performs {abs(improvement):.1f}% worse than a simple naive forecast.
+                                            
+                                            **What this means**: For this district, simply using the last observed value would be more accurate 
+                                            than the Prophet model's predictions.
+                                            
+                                            **Possible reasons:**
+                                            - Crime patterns in this district are highly irregular
+                                            - Insufficient historical data
+                                            - Recent changes in crime patterns not captured by the model
+                                            
+                                            **Recommendation**: Use forecasts with caution for this district.
+                                            """)
+                                except Exception as e:
+                                    st.warning(f"Could not load detailed metrics: {e}")
+                                    # Fallback to recalculating
+                                    if 'yhat' in test_results.columns and 'y' in test_results.columns:
+                                        mae = np.mean(np.abs(test_results['y'] - test_results['yhat']))
+                                        rmse = np.sqrt(np.mean((test_results['y'] - test_results['yhat'])**2))
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.metric("MAE", f"{mae:.2f}")
+                                        with col2:
+                                            st.metric("RMSE", f"{rmse:.2f}")
+                            else:
+                                # Fallback if metrics file doesn't exist
+                                if 'yhat' in test_results.columns and 'y' in test_results.columns:
+                                    mae = np.mean(np.abs(test_results['y'] - test_results['yhat']))
+                                    rmse = np.sqrt(np.mean((test_results['y'] - test_results['yhat'])**2))
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.metric("MAE", f"{mae:.2f}")
+                                    with col2:
+                                        st.metric("RMSE", f"{rmse:.2f}")
+                        
                         except Exception as e:
                             st.error(f"""
                             **Error creating test results plot:** {e}

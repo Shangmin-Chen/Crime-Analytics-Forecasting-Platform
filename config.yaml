@@ -7,8 +7,8 @@ training:
   # Fixed dates (used when use_fixed_dates: true)
   # These correspond to the original historical data period
   train_start: "2023-01-01"
-  train_end: "2024-05-31"  # Training through end of May 2024
-  test_end: "2024-10-31"   # Test through end of October 2024
+  train_end: "2024-12-31"  # Training through end of December 2024
+  test_end: "2025-04-04"   # Test through April 4, 2025 (last data point)
   
   # Dynamic date calculation (used when use_fixed_dates: false)
   # These ratios determine how to split the available data

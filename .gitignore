@@ -18,7 +18,8 @@ venv/
 
 # Generated Output Files
 output/forecasts/
-output/Crime_Maps/
+output/crime_maps/
+output/crime_forecasts/
 images/
 *.joblib
 

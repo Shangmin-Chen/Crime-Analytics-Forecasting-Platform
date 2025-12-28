@@ -13,6 +13,10 @@ from sklearn.cluster import DBSCAN
 from prophet import Prophet
 import json
 from datetime import datetime
+import gc
+import tempfile
+import shutil
+import glob
 
 from preprocess_for_crime import preprocess_data
 
@@ -108,6 +112,88 @@ def get_top_crime_types(df, n=10):
     top_crimes = df['OFFENSE_TYPE'].value_counts().head(n).index.tolist()
     return top_crimes
 
+def normalize_crime_type_name(crime_type):
+    """Normalize crime type name for file naming."""
+    safe_name = str(crime_type).replace('/', '_').replace('\\', '_').replace(':', '_')
+    safe_name = safe_name.replace('?', '').replace('*', '').replace('"', '').replace('<', '').replace('>', '')
+    safe_name = safe_name.replace('|', '_')
+    return safe_name
+
+def load_crime_forecast(crime_type):
+    """Load pre-generated forecast CSV."""
+    safe_name = normalize_crime_type_name(crime_type)
+    path = f"output/crime_forecasts/{safe_name}_forecast.csv"
+    if os.path.exists(path):
+        try:
+            return pd.read_csv(path, parse_dates=['ds'])
+        except Exception as e:
+            logging.warning(f"Error loading forecast for {crime_type}: {e}")
+            return None
+    return None
+
+def load_crime_map_html(crime_type):
+    """Load pre-generated map HTML."""
+    safe_name = normalize_crime_type_name(crime_type)
+    path = f"output/crime_maps/{safe_name}_map.html"
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            logging.warning(f"Error loading map for {crime_type}: {e}")
+            return None
+    return None
+
+def load_crime_components(crime_type):
+    """Load pre-generated forecast components image."""
+    safe_name = normalize_crime_type_name(crime_type)
+    path = f"output/crime_forecasts/{safe_name}_components.png"
+    if os.path.exists(path):
+        return path
+    return None
+
+def load_crime_clusters(crime_type):
+    """Load pre-generated cluster information."""
+    safe_name = normalize_crime_type_name(crime_type)
+    path = f"output/crime_forecasts/{safe_name}_clusters.csv"
+    if os.path.exists(path):
+        try:
+            return pd.read_csv(path)
+        except Exception as e:
+            logging.warning(f"Error loading clusters for {crime_type}: {e}")
+            return None
+    return None
+
+def has_meaningful_clusters(crime_type):
+    """Check if crime type has meaningful clusters."""
+    safe_name = normalize_crime_type_name(crime_type)
+    cluster_path = f"output/crime_forecasts/{safe_name}_clusters.csv"
+    
+    if not os.path.exists(cluster_path):
+        return False
+    
+    try:
+        cluster_info = pd.read_csv(cluster_path)
+        if cluster_info.empty:
+            return False
+        # Check if there's at least one cluster with count > 0
+        return (cluster_info['count'] > 0).any()
+    except Exception as e:
+        logging.warning(f"Error checking clusters for {crime_type}: {e}")
+        return False
+
+def validate_coordinates(df):
+    """Validate and filter out invalid coordinates."""
+    if df.empty:
+        return df
+    # Check for NaN
+    valid = df[['Lat', 'Long']].notna().all(axis=1)
+    # Check for finite values
+    valid = valid & np.isfinite(df['Lat']) & np.isfinite(df['Long'])
+    # Check for reasonable bounds (Boston area approximately)
+    valid = valid & (df['Lat'].between(-90, 90)) & (df['Long'].between(-180, 180))
+    return df[valid]
+
 def load_and_sample_data(df, sample_size=SAMPLE_SIZE, random_state=RANDOM_STATE, crime_type=None):
     if crime_type:
         df = df[df['OFFENSE_TYPE'] == crime_type]
@@ -117,6 +203,12 @@ def load_and_sample_data(df, sample_size=SAMPLE_SIZE, random_state=RANDOM_STATE,
         df_sample = df.copy()
     else:
         df_sample = df.sample(n=sample_size, random_state=random_state)
+    
+    # Validate coordinates and filter out invalid ones
+    df_sample = validate_coordinates(df_sample)
+    if df_sample.empty:
+        return pd.DataFrame(), np.array([])
+    
     coords = df_sample[['Lat', 'Long']].values
     return df_sample, coords
 
@@ -133,7 +225,35 @@ def get_top_clusters(df, top_n=TOP_N_CLUSTERS):
     top_clusters = cluster_counts.index.tolist()
     return top_clusters, cluster_counts
 
+def cleanup_stan_temp_files():
+    """
+    Clean up Stan temporary files that may be left behind.
+    This helps prevent issues on subsequent runs.
+    """
+    try:
+        temp_dir = tempfile.gettempdir()
+        # Look for Prophet/Stan temp directories
+        stan_patterns = [
+            os.path.join(temp_dir, 'prophet_model*'),
+            os.path.join(temp_dir, '*prophet*'),
+        ]
+        
+        for pattern in stan_patterns:
+            for temp_path in glob.glob(pattern):
+                try:
+                    if os.path.isdir(temp_path):
+                        shutil.rmtree(temp_path, ignore_errors=True)
+                    elif os.path.isfile(temp_path):
+                        os.remove(temp_path)
+                except:
+                    pass  # Ignore errors during cleanup
+    except Exception as e:
+        logging.warning(f"Error cleaning up Stan temp files: {e}")
+
 def forecast_crime_counts(df, cluster_id, periods=FORECAST_PERIODS):
+    """
+    Forecast crime counts for a specific cluster with proper resource management.
+    """
     cluster_data = df[df['cluster'] == cluster_id].copy()
     if cluster_data.empty:
         return None, pd.DataFrame()
@@ -146,11 +266,85 @@ def forecast_crime_counts(df, cluster_id, periods=FORECAST_PERIODS):
     if daily_counts['ds'].dt.tz is not None:
         daily_counts['ds'] = daily_counts['ds'].dt.tz_convert(None)
     
-    model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
-    model.fit(daily_counts)
-    future = model.make_future_dataframe(periods=periods)
-    forecast = model.predict(future)
-    return model, forecast
+    # VALIDATION: Check minimum data requirements
+    # Prophet needs at least 2 full cycles of the longest seasonality
+    # For yearly seasonality, that's ~730 days (2 years)
+    min_required_points = 730  # Conservative minimum for yearly seasonality
+    if len(daily_counts) < min_required_points:
+        logging.warning(f"Insufficient data points: {len(daily_counts)} < {min_required_points}")
+        # Try with weekly seasonality only (needs ~14 days minimum)
+        if len(daily_counts) < 14:
+            raise ValueError(f"Insufficient data: only {len(daily_counts)} daily data points. Need at least 14 for weekly seasonality.")
+        # Disable yearly seasonality if not enough data
+        yearly_seasonality = False
+        logging.info("Disabling yearly seasonality due to insufficient data")
+    else:
+        yearly_seasonality = True
+    
+    # Check for too many zeros (sparse data)
+    zero_ratio = (daily_counts['y'] == 0).sum() / len(daily_counts)
+    if zero_ratio > 0.9:
+        logging.warning(f"Very sparse data: {zero_ratio*100:.1f}% zeros")
+    
+    model = None
+    try:
+        # Create model with appropriate seasonality settings
+        model = Prophet(
+            yearly_seasonality=yearly_seasonality,
+            weekly_seasonality=True,
+            daily_seasonality=False
+        )
+        
+        # Fit the model
+        model.fit(daily_counts)
+        
+        # Generate forecast
+        future = model.make_future_dataframe(periods=periods)
+        forecast = model.predict(future)
+        
+        return model, forecast
+        
+    except Exception as e:
+        logging.exception(f"Error in Prophet model fitting: {e}")
+        # Clean up model if it exists
+        if model is not None:
+            try:
+                # Try to clean up Stan backend resources
+                if hasattr(model, 'stan_backend') and model.stan_backend is not None:
+                    try:
+                        # Try to close/cleanup Stan backend if it has a cleanup method
+                        if hasattr(model.stan_backend, 'close'):
+                            model.stan_backend.close()
+                        elif hasattr(model.stan_backend, 'cleanup'):
+                            model.stan_backend.cleanup()
+                    except:
+                        pass
+                    # Force cleanup of Stan backend
+                    del model.stan_backend
+            except Exception as cleanup_error:
+                logging.warning(f"Error cleaning up Stan backend: {cleanup_error}")
+            try:
+                del model
+            except:
+                pass
+        
+        # Force garbage collection to free resources
+        gc.collect()
+        
+        raise
+    finally:
+        # Additional cleanup: try to clean up Stan temp directories
+        # This is a workaround for cmdstanpy temp file issues
+        try:
+            import cmdstanpy
+            # Clear any cached Stan models
+            if hasattr(cmdstanpy, 'clear_cache'):
+                cmdstanpy.clear_cache()
+        except:
+            pass
+        
+        # Force garbage collection
+        gc.collect()
 
 # ============================================================================
 # Visualization Functions
@@ -158,84 +352,139 @@ def forecast_crime_counts(df, cluster_id, periods=FORECAST_PERIODS):
 
 def plot_forecast(model, forecast, cluster_id, crime_type=""):
     """Plot forecast with enhanced annotations and explanations."""
-    fig1, ax1 = plt.subplots(figsize=(12, 6))
-    model.plot(forecast, ax=ax1)
-    title = f'Forecast of Daily Crime Counts for Cluster {cluster_id}'
-    if crime_type:
-        title += f' ({crime_type})'
-    ax1.set_title(title, fontsize=14, fontweight='bold')
-    ax1.set_xlabel('Date', fontsize=12)
-    ax1.set_ylabel('Daily Crime Count', fontsize=12)
-    ax1.grid(True, alpha=0.3)
-    plt.tight_layout()
-    st.pyplot(fig1)
-    
-    st.info("**Understanding this forecast:** The solid line shows predicted crime counts, while the shaded area represents the confidence interval (uncertainty range). The model captures historical patterns to predict future trends.")
-    
-    # Components plot
-    st.subheader("Forecast Components")
-    st.markdown("""
-    **What are forecast components?** This breakdown shows how the model understands crime patterns:
-    - **Trend**: Long-term increases or decreases in crime over time
-    - **Weekly**: Patterns that repeat every week (e.g., higher crime on weekends)
-    - **Yearly**: Seasonal patterns that repeat annually (e.g., summer vs. winter trends)
-    """)
-    fig_components = model.plot_components(forecast)
-    st.pyplot(fig_components)
+    fig1 = None
+    fig_components = None
+    try:
+        fig1, ax1 = plt.subplots(figsize=(12, 6))
+        model.plot(forecast, ax=ax1)
+        title = f'Forecast of Daily Crime Counts for Cluster {cluster_id}'
+        if crime_type:
+            title += f' ({crime_type})'
+        ax1.set_title(title, fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Date', fontsize=12)
+        ax1.set_ylabel('Daily Crime Count', fontsize=12)
+        ax1.grid(True, alpha=0.3)
+        plt.tight_layout()
+        st.pyplot(fig1)
+        
+        st.info("**Understanding this forecast:** The solid line shows predicted crime counts, while the shaded area represents the confidence interval (uncertainty range). The model captures historical patterns to predict future trends.")
+        
+        # Components plot
+        st.subheader("Forecast Components")
+        st.markdown("""
+        **What are forecast components?** This breakdown shows how the model understands crime patterns:
+        - **Trend**: Long-term increases or decreases in crime over time
+        - **Weekly**: Patterns that repeat every week (e.g., higher crime on weekends)
+        - **Yearly**: Seasonal patterns that repeat annually (e.g., summer vs. winter trends)
+        """)
+        fig_components = model.plot_components(forecast)
+        st.pyplot(fig_components)
+    finally:
+        # Explicitly close figures to free resources
+        if fig1 is not None:
+            plt.close(fig1)
+        if fig_components is not None:
+            plt.close(fig_components)
 
 def plot_hotspots(gdf, top_clusters):
     """Plot hotspots with enhanced annotations."""
-    fig, ax = plt.subplots(figsize=(14, 12))
-    minx, miny, maxx, maxy = gdf.total_bounds
-    padding = 1000
-    ax.set_xlim(minx - padding, maxx + padding)
-    ax.set_ylim(miny - padding, maxy + padding)
+    fig = None
     try:
-        ctx.add_basemap(
-            ax,
-            crs=gdf.crs.to_string(),
-            source=ctx.providers.Stamen.TonerLite,
-            zoom=13
-        )
-    except (Exception, AttributeError, ValueError) as e:
-        logging.warning(f"Failed to load Stamen.TonerLite basemap: {e}. Trying OpenStreetMap...")
+        # Validate empty GeoDataFrame
+        if gdf.empty:
+            st.warning("No geographic data to plot.")
+            return
+        
+        # Validate bounds
+        try:
+            bounds = gdf.total_bounds
+            if bounds is None or len(bounds) != 4:
+                st.warning("Invalid geographic bounds. Cannot plot map.")
+                return
+            
+            minx, miny, maxx, maxy = bounds
+            # Check that bounds are finite and valid
+            if not all(np.isfinite([minx, miny, maxx, maxy])):
+                st.warning("Geographic bounds contain invalid values. Cannot plot map.")
+                return
+            
+            # Check that bounds make sense (max > min)
+            if maxx <= minx or maxy <= miny:
+                st.warning("Invalid geographic bounds (max <= min). Cannot plot map.")
+                return
+        except Exception as e:
+            logging.warning(f"Error getting geographic bounds: {e}")
+            st.warning("Could not determine geographic bounds. Cannot plot map.")
+            return
+        
+        # Validate that top_clusters contains valid cluster IDs
+        if not top_clusters:
+            st.warning("No clusters specified for plotting.")
+            return
+        
+        # Filter to only clusters that exist in the GeoDataFrame
+        available_clusters = gdf['cluster'].unique() if 'cluster' in gdf.columns else []
+        valid_clusters = [c for c in top_clusters if c in available_clusters]
+        
+        if not valid_clusters:
+            st.warning("None of the specified clusters exist in the data.")
+            return
+        
+        fig, ax = plt.subplots(figsize=(14, 12))
+        padding = 1000
+        ax.set_xlim(minx - padding, maxx + padding)
+        ax.set_ylim(miny - padding, maxy + padding)
+        
         try:
             ctx.add_basemap(
                 ax,
                 crs=gdf.crs.to_string(),
-                source=ctx.providers.OpenStreetMap.Mapnik,
+                source=ctx.providers.Stamen.TonerLite,
                 zoom=13
             )
-        except (Exception, AttributeError, ValueError) as e2:
-            logging.warning(f"Failed to load OpenStreetMap basemap: {e2}. Continuing without basemap.")
-    
-    gdf_top_clusters = gdf[gdf['cluster'].isin(top_clusters)]
-    if gdf_top_clusters.empty:
-        st.warning("No cluster data to plot.")
-        return
-    
-    gdf_top_clusters.plot(
-        ax=ax,
-        column='cluster',
-        cmap='tab10',
-        markersize=50,
-        alpha=0.7,
-        legend=True
-    )
-    ax.set_title("Top Crime Hotspot Clusters", fontsize=14, fontweight='bold')
-    ax.set_xlabel("Longitude", fontsize=12)
-    ax.set_ylabel("Latitude", fontsize=12)
-    plt.tight_layout()
-    st.pyplot(fig)
+        except (Exception, AttributeError, ValueError) as e:
+            logging.warning(f"Failed to load Stamen.TonerLite basemap: {e}. Trying OpenStreetMap...")
+            try:
+                ctx.add_basemap(
+                    ax,
+                    crs=gdf.crs.to_string(),
+                    source=ctx.providers.OpenStreetMap.Mapnik,
+                    zoom=13
+                )
+            except (Exception, AttributeError, ValueError) as e2:
+                logging.warning(f"Failed to load OpenStreetMap basemap: {e2}. Continuing without basemap.")
+        
+        gdf_top_clusters = gdf[gdf['cluster'].isin(valid_clusters)]
+        if gdf_top_clusters.empty:
+            st.warning("No cluster data to plot.")
+            return
+        
+        gdf_top_clusters.plot(
+            ax=ax,
+            column='cluster',
+            cmap='tab10',
+            markersize=50,
+            alpha=0.7,
+            legend=True
+        )
+        ax.set_title("Top Crime Hotspot Clusters", fontsize=14, fontweight='bold')
+        ax.set_xlabel("Longitude", fontsize=12)
+        ax.set_ylabel("Latitude", fontsize=12)
+        plt.tight_layout()
+        st.pyplot(fig)
 
-    # Add explanation
-    st.info("""
-    **Understanding the hotspot map:** 
-    - Each color represents a different cluster (hotspot area)
-    - Clusters are ranked by density (number of incidents per area)
-    - Higher density areas indicate locations where this crime type occurs more frequently
-    - The top 5 clusters are shown, with cluster 0 being the most dense
-    """)
+        # Add explanation
+        st.info("""
+        **Understanding the hotspot map:** 
+        - Each color represents a different cluster (hotspot area)
+        - Clusters are ranked by density (number of incidents per area)
+        - Higher density areas indicate locations where this crime type occurs more frequently
+        - The top 5 clusters are shown, with cluster 0 being the most dense
+        """)
+    finally:
+        # Explicitly close figure to free resources
+        if fig is not None:
+            plt.close(fig)
 
 # ============================================================================
 # Sidebar Content
@@ -861,6 +1110,13 @@ def run_crime_type_analysis():
     patterns can help target interventions and resource allocation to areas where they'll have the most impact.
     """)
     
+    st.info("""
+    **Understanding Clusters:** If a crime type shows no clusters on the map, it means DBSCAN found no significant hotspots. 
+    With parameters eps=0.0001 (~11 meters) and min_samples=20, incidents must be very close together and numerous 
+    to form a cluster. No clusters indicates that incidents for this crime type are too spread out geographically 
+    to form identifiable hotspots.
+    """)
+    
     try:
         df = load_preprocessed_data()
         if df.empty:
@@ -875,8 +1131,9 @@ def run_crime_type_analysis():
         st.markdown("---")
         st.subheader("Select a Crime Type to Analyze")
         
-        top_10_crimes = get_top_crime_types(df, n=10)
-        if not top_10_crimes:
+        # Get all unique crime types
+        all_crime_types = sorted(df['OFFENSE_TYPE'].unique().tolist())
+        if not all_crime_types:
             st.error("""
             **No crime types found in the data.**
             
@@ -884,126 +1141,127 @@ def run_crime_type_analysis():
             """)
             return
         
-        # Show crime counts
-        crime_counts = df['OFFENSE_TYPE'].value_counts().head(10)
-        st.caption(f"**Top 10 crime types by incident count:** {', '.join(crime_counts.index.tolist()[:5])}...")
+        # Get crime counts for sorting
+        crime_counts_all = df['OFFENSE_TYPE'].value_counts()
+        
+        # Filter to only show crime types with meaningful clusters
+        crime_types_with_clusters = [
+            crime_type for crime_type in all_crime_types 
+            if has_meaningful_clusters(crime_type)
+        ]
+        
+        if not crime_types_with_clusters:
+            st.warning("""
+            **No crime types with meaningful clusters found.**
+            
+            **To generate analyses:** Run `make forecast` in your terminal to generate crime-type analyses.
+            This will create forecasts, maps, and cluster information for all crime types.
+            """)
+            return
+        
+        # Sort by crime count (most to least)
+        crime_types_with_clusters = sorted(
+            crime_types_with_clusters,
+            key=lambda x: crime_counts_all.get(x, 0),
+            reverse=True
+        )
+        
+        st.caption(f"**Sorted from most crime to least** ({len(crime_types_with_clusters)} crime types with meaningful clusters)")
         
         selected_crime = st.selectbox(
             "Choose a crime type:",
-            top_10_crimes,
-            help="Select one of the top 10 most common crime types to analyze. The analysis will identify hotspots and forecast trends for this crime type."
+            crime_types_with_clusters,
+            help="Select a crime type to analyze. Only crime types with meaningful clusters are shown, sorted by total incident count. Pre-generated analyses will be displayed instantly."
         )
         
         # Show sample size for selected crime
         selected_count = len(df[df['OFFENSE_TYPE'] == selected_crime])
         st.info(f"**{selected_crime}**: {selected_count:,} total incidents in the dataset")
 
-        if st.button("Run Crime-Type Analysis", type="primary"):
-            with st.spinner("Loading and sampling data..."):
-                df_sample, coords = load_and_sample_data(df, crime_type=selected_crime)
+        # Load pre-generated results
+        forecast = load_crime_forecast(selected_crime)
+        map_html = load_crime_map_html(selected_crime)
+        components_path = load_crime_components(selected_crime)
+        cluster_info = load_crime_clusters(selected_crime)
+        
+        if forecast is None:
+            st.error(f"""
+            **No pre-generated analysis found for '{selected_crime}'.**
             
-            if len(coords) == 0:
-                st.error(f"""
-                **No data found for crime type '{selected_crime}'.**
-                
-                **What to do:** Please select a different crime type from the dropdown menu.
-                """)
-                return
+            **To generate analyses:** Run `make forecast` in your terminal to generate all crime-type analyses.
+            This will create forecasts, maps, and cluster information for all crime types.
+            """)
+            return
+        
+        # Display forecast
+        st.markdown("---")
+        st.subheader(f"Forecast for {selected_crime}")
+        
+        try:
+            fig = px.line(
+                forecast, 
+                x='ds', 
+                y='yhat', 
+                title=f'Forecasted Crime Counts for {selected_crime}',
+                labels={'ds': 'Date', 'yhat': 'Predicted Daily Crime Count'}
+            )
+            fig.update_traces(line=dict(width=2))
             
-            st.success(f"Loaded {len(df_sample):,} incidents for analysis")
+            # Add confidence intervals if available
+            if 'yhat_lower' in forecast.columns and 'yhat_upper' in forecast.columns:
+                fig.add_scatter(
+                    x=forecast['ds'], 
+                    y=forecast['yhat_lower'], 
+                    mode='lines', 
+                    name='Lower Confidence Bound (80%)', 
+                    line=dict(dash='dot', color='lightblue'),
+                    fill=None
+                )
+                fig.add_scatter(
+                    x=forecast['ds'], 
+                    y=forecast['yhat_upper'], 
+                    mode='lines', 
+                    name='Upper Confidence Bound (80%)', 
+                    line=dict(dash='dot', color='lightblue'),
+                    fill='tonexty',
+                    fillcolor='rgba(173, 216, 230, 0.2)'
+                )
             
-            with st.spinner("Performing clustering analysis to identify hotspots..."):
-                cluster_labels = perform_dbscan(coords)
-            
-            if len(cluster_labels) == 0:
-                st.warning("""
-                **No clusters identified.**
-                
-                **Possible reasons:**
-                - The selected crime type has incidents spread too far apart
-                - There aren't enough incidents to form meaningful clusters
-                
-                **Try:** Selecting a different crime type with more incidents.
-                """)
-                return
-            
-            df_sample['cluster'] = cluster_labels
-            df_clustered = df_sample[df_sample['cluster'] != -1].copy()
-            noise_count = len(df_sample[df_sample['cluster'] == -1])
-            
-            if df_clustered.empty:
-                st.warning("""
-                **No meaningful clusters found.**
-                
-                All incidents were classified as "noise" (not part of any cluster), which means the incidents are too spread out 
-                to form hotspots. This may indicate the crime type occurs randomly across the city rather than in specific locations.
-                
-                **Try:** Selecting a different crime type that tends to cluster in specific areas.
-                """)
-                return
-            
-            st.info(f"Identified {len(df_clustered['cluster'].unique())} clusters. {noise_count} incidents were classified as noise (not in hotspots).")
-            
-            top_clusters, cluster_counts = get_top_clusters(df_clustered)
-            if not top_clusters:
-                st.warning("No top clusters identified. Please try a different crime type.")
-                return
-            
-            top_cluster_id = top_clusters[0]
-            
-            # Show cluster information
+            fig.update_layout(
+                hovermode='x unified',
+                xaxis_title="Date",
+                yaxis_title="Predicted Daily Crime Count",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error displaying forecast: {e}")
+            logging.exception("Error displaying forecast")
+        
+        # Display forecast components if available
+        if components_path:
+            st.markdown("---")
+            st.subheader("Forecast Components")
+            st.markdown("""
+            **What are forecast components?** This breakdown shows how the model understands crime patterns:
+            - **Trend**: Long-term increases or decreases in crime over time
+            - **Weekly**: Patterns that repeat every week (e.g., higher crime on weekends)
+            - **Yearly**: Seasonal patterns that repeat annually (e.g., summer vs. winter trends)
+            """)
+            st.image(components_path)
+        
+        # Display cluster information if available
+        if cluster_info is not None and not cluster_info.empty:
             st.markdown("---")
             st.subheader("Hotspot Clusters Identified")
             st.markdown(f"""
-            **Top {len(top_clusters)} clusters by density:**
+            **Top {len(cluster_info)} clusters by density:**
             """)
-            for i, cluster_id in enumerate(top_clusters):
-                count = cluster_counts[cluster_id]
-                st.write(f"{i+1}. Cluster {cluster_id}: {count:,} incidents")
-            
-            with st.spinner("Training forecasting model for the top hotspot..."):
-                try:
-                    model, forecast = forecast_crime_counts(df_clustered, top_cluster_id)
-                except Exception as e:
-                    st.error(f"""
-                    **Error training forecast model:** {e}
-                    
-                    **What happened:** The cluster may have insufficient data points to train a reliable forecasting model.
-                    
-                    **Possible solutions:**
-                    - Try a different crime type with more incidents
-                    - The data may be too sparse for this cluster
-                    """)
-                    logging.exception("Error in forecast_crime_counts")
-                    return
-            
-            if model is None or forecast.empty:
-                st.error("""
-                **Unable to forecast due to insufficient data in the top cluster.**
-                
-                **What to do:** Try selecting a different crime type with more incidents in hotspot areas.
-                """)
-                return
-            
-            st.markdown("---")
-            st.subheader(f"Forecast for {selected_crime} - Top Hotspot (Cluster {top_cluster_id})")
-            st.markdown(f"""
-            This forecast shows predicted crime counts for the most dense hotspot area (Cluster {top_cluster_id}) 
-            where {cluster_counts[top_cluster_id]:,} incidents occurred.
-            """)
-            
-            try:
-                plot_forecast(model, forecast, top_cluster_id, selected_crime)
-            except Exception as e:
-                st.error(f"""
-                **Error plotting forecast:** {e}
-                
-                **What happened:** There was an issue generating the forecast visualization. Please try again.
-                """)
-                logging.exception("Error in plot_forecast")
-                return
-            
-            # Plot hotspots
+            for i, row in cluster_info.iterrows():
+                st.write(f"{i+1}. Cluster {int(row['cluster_id'])}: {int(row['count']):,} incidents")
+        
+        # Display map if available
+        if map_html:
             st.markdown("---")
             st.subheader("Hotspot Clusters Map")
             st.markdown("""
@@ -1013,21 +1271,14 @@ def run_crime_type_analysis():
             - The map shows the geographic locations where this crime type is concentrated
             - Use this to identify areas that may benefit from targeted interventions
             """)
+            st.components.v1.html(map_html, height=600, scrolling=True)
+        else:
+            st.warning(f"""
+            **Map not available for '{selected_crime}'.**
             
-            try:
-                gdf = gpd.GeoDataFrame(
-                    df_clustered,
-                    geometry=gpd.points_from_xy(df_clustered.Long, df_clustered.Lat),
-                    crs=CRS_WGS84
-                ).to_crs(CRS_WEB_MERCATOR)
-                plot_hotspots(gdf, top_clusters)
-            except Exception as e:
-                st.error(f"""
-                **Error creating hotspot map:** {e}
-                
-                **What happened:** There was an issue generating the geographic visualization. Please try again.
-                """)
-                logging.exception("Error in plot_hotspots")
+            **To generate maps:** Run `make forecast` to regenerate all crime-type analyses including maps.
+            """)
+        
     except Exception as e:
         st.error(f"""
         **An unexpected error occurred:** {e}

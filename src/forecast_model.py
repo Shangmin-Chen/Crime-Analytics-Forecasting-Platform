@@ -20,10 +20,20 @@ import numpy as np
 from data_prep import load_and_preprocess_data, validate_data
 from prophet import Prophet
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
+from sklearn.cluster import DBSCAN
 import joblib
 import os
 import yaml
 from datetime import timedelta
+import logging
+import gc
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import folium
+from folium.plugins import HeatMap
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 # ============================================================================
 # DEPENDENCY CHECKS
@@ -313,6 +323,455 @@ def baseline_forecast(train_df, test_df):
     return baselines
 
 # ============================================================================
+# CRIME-TYPE ANALYSIS GENERATION
+# ============================================================================
+
+def normalize_crime_type_name(crime_type):
+    """Normalize crime type name for file naming."""
+    # Replace problematic characters
+    safe_name = str(crime_type).replace('/', '_').replace('\\', '_').replace(':', '_')
+    safe_name = safe_name.replace('?', '').replace('*', '').replace('"', '').replace('<', '').replace('>', '')
+    safe_name = safe_name.replace('|', '_')
+    return safe_name
+
+def validate_coordinates(df):
+    """Validate and filter out invalid coordinates."""
+    if df.empty:
+        return df
+    valid = df[['Lat', 'Long']].notna().all(axis=1)
+    valid = valid & np.isfinite(df['Lat']) & np.isfinite(df['Long'])
+    valid = valid & (df['Lat'].between(-90, 90)) & (df['Long'].between(-180, 180))
+    return df[valid]
+
+def load_and_sample_crime_data(df, crime_type, sample_size=10000, random_state=42):
+    """Load and sample data for a specific crime type."""
+    df_crime = df[df['OFFENSE_TYPE'] == crime_type].copy()
+    if df_crime.empty:
+        return pd.DataFrame(), np.array([])
+    
+    if len(df_crime) < sample_size:
+        df_sample = df_crime.copy()
+    else:
+        df_sample = df_crime.sample(n=sample_size, random_state=random_state)
+    
+    df_sample = validate_coordinates(df_sample)
+    if df_sample.empty:
+        return pd.DataFrame(), np.array([])
+    
+    coords = df_sample[['Lat', 'Long']].values
+    return df_sample, coords
+
+def perform_dbscan_clustering(coords, eps=0.0001, min_samples=20):
+    """Perform DBSCAN clustering on coordinates."""
+    if len(coords) == 0:
+        return np.array([])
+    dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric='haversine')
+    coords_rad = np.radians(coords)
+    cluster_labels = dbscan.fit_predict(coords_rad)
+    return cluster_labels
+
+def forecast_crime_cluster(df_clustered, cluster_id, periods=30):
+    """Forecast crime counts for a specific cluster."""
+    cluster_data = df_clustered[df_clustered['cluster'] == cluster_id].copy()
+    if cluster_data.empty:
+        return None, pd.DataFrame()
+    
+    cluster_data = cluster_data.rename(columns={'OCCURRED_ON_DATE': 'ds'})
+    if cluster_data['ds'].dt.tz is not None:
+        cluster_data['ds'] = cluster_data['ds'].dt.tz_convert(None)
+    
+    daily_counts = cluster_data.set_index('ds').resample('D').size().reset_index(name='y')
+    if daily_counts['ds'].dt.tz is not None:
+        daily_counts['ds'] = daily_counts['ds'].dt.tz_convert(None)
+    
+    min_required_points = 730
+    if len(daily_counts) < min_required_points:
+        if len(daily_counts) < 14:
+            return None, pd.DataFrame()
+        yearly_seasonality = False
+    else:
+        yearly_seasonality = True
+    
+    model = None
+    try:
+        model = Prophet(
+            yearly_seasonality=yearly_seasonality,
+            weekly_seasonality=True,
+            daily_seasonality=False
+        )
+        model.fit(daily_counts)
+        future = model.make_future_dataframe(periods=periods)
+        forecast = model.predict(future)
+        return model, forecast
+    except Exception as e:
+        logging.warning(f"Error forecasting cluster {cluster_id}: {e}")
+        if model is not None:
+            try:
+                if hasattr(model, 'stan_backend') and model.stan_backend is not None:
+                    del model.stan_backend
+            except:
+                pass
+            del model
+        gc.collect()
+        return None, pd.DataFrame()
+    finally:
+        # Clean up model after use
+        if model is not None:
+            try:
+                if hasattr(model, 'stan_backend') and model.stan_backend is not None:
+                    try:
+                        if hasattr(model.stan_backend, 'close'):
+                            model.stan_backend.close()
+                    except:
+                        pass
+                    del model.stan_backend
+            except:
+                pass
+            del model
+        gc.collect()
+        try:
+            import cmdstanpy
+            if hasattr(cmdstanpy, 'clear_cache'):
+                cmdstanpy.clear_cache()
+        except:
+            pass
+
+def generate_crime_type_analyses():
+    """Generate all crime-type analyses and save to files."""
+    from preprocess_for_crime import preprocess_data
+    
+    print("\nLoading preprocessed data...")
+    df = preprocess_data()
+    
+    if df.empty:
+        print("  ❌ No data available for crime-type analysis")
+        return
+    
+    # Get all unique crime types
+    crime_types = df['OFFENSE_TYPE'].unique()
+    print(f"  Found {len(crime_types)} unique crime types")
+    
+    # Create output directories
+    os.makedirs('output/crime_maps', exist_ok=True)
+    os.makedirs('output/crime_forecasts', exist_ok=True)
+    
+    # Prepare arguments for worker functions
+    crime_args = [(crime_type, df) for crime_type in crime_types]
+    
+    # Limit workers to prevent memory exhaustion
+    max_workers = min(8, multiprocessing.cpu_count())
+    print(f"  Using {max_workers} parallel workers for crime-type processing")
+    
+    successful = 0
+    failed = 0
+    skipped = 0
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_crime = {
+            executor.submit(process_crime_type_analysis, args): args[0] 
+            for args in crime_args
+        }
+        
+        # Process results as they complete
+        completed = 0
+        total = len(crime_types)
+        for future in as_completed(future_to_crime):
+            crime_type = future_to_crime[future]
+            completed += 1
+            try:
+                result = future.result()
+                if result['status'] == 'success':
+                    successful += 1
+                    print(f"  [{completed}/{total}] ✓ {crime_type}")
+                elif result['status'] == 'skipped':
+                    skipped += 1
+                    reason = result.get('reason', 'Unknown')
+                    print(f"  [{completed}/{total}] ⚠️  {crime_type} - {reason}")
+                else:
+                    failed += 1
+                    error = result.get('error', 'Unknown error')
+                    print(f"  [{completed}/{total}] ❌ {crime_type} - {error}")
+            except Exception as e:
+                failed += 1
+                logging.exception(f"Exception processing {crime_type}: {e}")
+                print(f"  [{completed}/{total}] ❌ {crime_type} - Exception: {e}")
+    
+    print(f"\n{'='*70}")
+    print(f"Crime-Type Analysis Summary:")
+    print(f"  Successful: {successful}")
+    print(f"  Skipped: {skipped}")
+    print(f"  Failed: {failed}")
+    print(f"  Total: {len(crime_types)}")
+    print(f"{'='*70}")
+
+# ============================================================================
+# WORKER FUNCTIONS FOR CONCURRENT EXECUTION
+# ============================================================================
+
+def process_district_forecast(args):
+    """Process a single district forecast - worker function for multiprocessing."""
+    district, daily_counts, config, train_start, train_end, test_end, future_start, future_end = args
+    
+    try:
+        # Filter data for this district
+        df = daily_counts[daily_counts['DISTRICT'] == district].copy()
+        
+        # Prophet requires 'ds' (date) and 'y' (value) columns
+        df.rename(columns={'DATE': 'ds', 'COUNT': 'y'}, inplace=True)
+        df['ds'] = pd.to_datetime(df['ds'])
+        
+        # Filter data from train_start
+        df = df[df['ds'] >= train_start]
+        
+        # Split data into training and testing
+        train_df = df[(df['ds'] >= train_start) & (df['ds'] <= train_end)]
+        test_df = df[(df['ds'] > train_end) & (df['ds'] <= test_end)]
+        
+        # Validate training data
+        min_records = config['model'].get('min_training_records', 10)
+        try:
+            validate_training_data(
+                daily_counts[daily_counts['DISTRICT'] == district], 
+                train_start, 
+                train_end, 
+                min_records
+            )
+        except ValueError as e:
+            return {'district': district, 'status': 'skipped', 'error': str(e)}
+        
+        # Handle outliers in training data
+        train_df, outlier_count = detect_and_handle_outliers(train_df, threshold=3)
+        
+        # Train initial model
+        model = Prophet(
+            yearly_seasonality=config['model'].get('yearly_seasonality', True),
+            weekly_seasonality=config['model'].get('weekly_seasonality', True),
+            daily_seasonality=config['model'].get('daily_seasonality', False),
+            changepoint_prior_scale=config['model'].get('changepoint_prior_scale', 0.05),
+            seasonality_prior_scale=config['model'].get('seasonality_prior_scale', 10.0)
+        )
+        
+        if config['model'].get('include_holidays', True):
+            model.add_country_holidays(country_name='US')
+        
+        model.fit(train_df)
+        
+        # Evaluate on test set
+        metrics = None
+        forecast_test = None
+        if not test_df.empty:
+            baselines = baseline_forecast(train_df, test_df)
+            forecast_days_test = (test_df['ds'].max() - train_end).days
+            if forecast_days_test < 1:
+                forecast_days_test = 30
+            
+            future_test = model.make_future_dataframe(periods=forecast_days_test)
+            forecast_test = model.predict(future_test)
+            metrics = evaluate_model_comprehensive(test_df, forecast_test)
+            
+            if metrics:
+                improvement = (baselines['naive'] - metrics['mae']) / baselines['naive'] * 100
+                metrics['district'] = district
+                metrics['baseline_naive_mae'] = baselines['naive']
+                metrics['improvement_pct'] = improvement
+                
+                # Save test results
+                merged = pd.merge(
+                    test_df, 
+                    forecast_test[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], 
+                    on='ds', 
+                    how='left'
+                )
+                merged.to_csv(f"output/forecasts/{district}_test_results.csv", index=False)
+        
+        # Generate forecast for full period if test_df was empty
+        if forecast_test is None:
+            future_all = model.make_future_dataframe(periods=30)
+            forecast_test = model.predict(future_all)
+        
+        # Save initial model and forecast
+        forecast_test.to_csv(f"output/forecasts/{district}_forecast.csv", index=False)
+        joblib.dump(model, f"output/forecasts/{district}_initial_model.joblib")
+        
+        # Retrain on full dataset
+        full_train_df = df[df['ds'] <= test_end]
+        full_train_df, _ = detect_and_handle_outliers(full_train_df, threshold=3)
+        
+        final_model = Prophet(
+            yearly_seasonality=config['model'].get('yearly_seasonality', True),
+            weekly_seasonality=config['model'].get('weekly_seasonality', True),
+            daily_seasonality=config['model'].get('daily_seasonality', False),
+            changepoint_prior_scale=config['model'].get('changepoint_prior_scale', 0.05),
+            seasonality_prior_scale=config['model'].get('seasonality_prior_scale', 10.0)
+        )
+        
+        if config['model'].get('include_holidays', True):
+            final_model.add_country_holidays(country_name='US')
+        
+        final_model.fit(full_train_df)
+        
+        # Generate future forecast
+        total_days_future = (future_end - test_end).days
+        if total_days_future < 1:
+            return {'district': district, 'status': 'error', 'error': 'Future end date is before test end date'}
+        
+        future_all = final_model.make_future_dataframe(periods=total_days_future)
+        forecast_future = final_model.predict(future_all)
+        
+        forecast_2months = forecast_future[
+            (forecast_future['ds'] >= future_start) & 
+            (forecast_future['ds'] <= future_end)
+        ]
+        
+        # Save production forecast and model
+        forecast_2months.to_csv(f"output/forecasts/{district}_2months_future_forecast.csv", index=False)
+        joblib.dump(final_model, f"output/forecasts/{district}_final_model.joblib")
+        
+        # Save metrics
+        if metrics:
+            metrics_df = pd.DataFrame([{
+                'district': district,
+                'mae': metrics['mae'],
+                'rmse': metrics['rmse'],
+                'mape': metrics['mape'],
+                'coverage': metrics['coverage'],
+                'test_samples': metrics['test_samples'],
+                'baseline_naive_mae': metrics['baseline_naive_mae'],
+                'improvement_pct': metrics['improvement_pct']
+            }])
+            metrics_df.to_csv(f"output/forecasts/{district}_metrics.csv", index=False)
+        
+        # Cleanup
+        del model, final_model
+        gc.collect()
+        
+        return {'district': district, 'status': 'success', 'metrics': metrics}
+        
+    except Exception as e:
+        logging.exception(f"Error processing district {district}: {e}")
+        return {'district': district, 'status': 'error', 'error': str(e)}
+
+def process_crime_type_analysis(args):
+    """Process a single crime type analysis - worker function for multiprocessing."""
+    crime_type, df = args
+    
+    try:
+        safe_name = normalize_crime_type_name(crime_type)
+        
+        # Load and sample data
+        df_sample, coords = load_and_sample_crime_data(df, crime_type)
+        if len(coords) == 0:
+            return {'crime_type': crime_type, 'status': 'skipped', 'reason': 'No valid coordinates'}
+        
+        # Perform clustering
+        cluster_labels = perform_dbscan_clustering(coords)
+        if len(cluster_labels) == 0:
+            return {'crime_type': crime_type, 'status': 'skipped', 'reason': 'No clusters found'}
+        
+        df_sample['cluster'] = cluster_labels
+        df_clustered = df_sample[df_sample['cluster'] != -1].copy()
+        
+        if df_clustered.empty:
+            return {'crime_type': crime_type, 'status': 'skipped', 'reason': 'No meaningful clusters'}
+        
+        # Get top cluster
+        cluster_counts = df_clustered['cluster'].value_counts()
+        if cluster_counts.empty:
+            return {'crime_type': crime_type, 'status': 'skipped', 'reason': 'No cluster counts'}
+        
+        top_cluster_id = cluster_counts.index[0]
+        
+        # Generate forecast
+        model, forecast = forecast_crime_cluster(df_clustered, top_cluster_id)
+        if model is None or forecast.empty:
+            return {'crime_type': crime_type, 'status': 'skipped', 'reason': 'Could not generate forecast'}
+        
+        # Save forecast CSV
+        forecast_path = f"output/crime_forecasts/{safe_name}_forecast.csv"
+        forecast.to_csv(forecast_path, index=False)
+        
+        # Generate and save forecast components plot
+        try:
+            fig = model.plot_components(forecast)
+            components_path = f"output/crime_forecasts/{safe_name}_components.png"
+            fig.savefig(components_path, bbox_inches='tight', dpi=150)
+            plt.close(fig)
+        except Exception as e:
+            logging.warning(f"Could not save components plot for {crime_type}: {e}")
+        
+        # Save cluster information
+        cluster_info = pd.DataFrame({
+            'cluster_id': cluster_counts.index,
+            'count': cluster_counts.values
+        })
+        cluster_info_path = f"output/crime_forecasts/{safe_name}_clusters.csv"
+        cluster_info.to_csv(cluster_info_path, index=False)
+        
+        # Generate and save map
+        try:
+            center_lat = df_clustered['Lat'].mean()
+            center_long = df_clustered['Long'].mean()
+            
+            m = folium.Map(location=[center_lat, center_long], zoom_start=12)
+            
+            top_clusters = cluster_counts.head(5).index.tolist()
+            colors = ['red', 'blue', 'green', 'purple', 'orange']
+            
+            for cluster_id in top_clusters:
+                cluster_data = df_clustered[df_clustered['cluster'] == cluster_id]
+                color = colors[top_clusters.index(cluster_id) % len(colors)]
+                
+                for _, row in cluster_data.iterrows():
+                    folium.CircleMarker(
+                        location=[row['Lat'], row['Long']],
+                        radius=5,
+                        popup=f"Cluster {cluster_id}",
+                        color=color,
+                        fill=True,
+                        fillColor=color,
+                        fillOpacity=0.6
+                    ).add_to(m)
+            
+            # Add legend to map
+            legend_html = '''
+            <div style="position: fixed; 
+                 top: 10px; right: 10px; width: 180px; height: auto; 
+                 background-color: white; z-index:9999; font-size:14px;
+                 border:2px solid grey; border-radius:5px; padding: 10px;
+                 box-shadow: 0 0 15px rgba(0,0,0,0.2);">
+                 <h4 style="margin-top:0; margin-bottom:10px; font-size:16px; font-weight:bold;">Clusters</h4>
+            '''
+            for i, cluster_id in enumerate(top_clusters):
+                color = colors[i % len(colors)]
+                count = int(cluster_counts[cluster_id])
+                legend_html += f'''
+                <p style="margin:5px 0; display:flex; align-items:center;">
+                    <span style="display:inline-block; width:16px; height:16px; background-color:{color}; 
+                         border:1px solid #333; border-radius:50%; margin-right:8px;"></span>
+                    <span>Cluster {int(cluster_id)} ({count:,})</span>
+                </p>
+                '''
+            legend_html += '</div>'
+            
+            m.get_root().html.add_child(folium.Element(legend_html))
+            
+            map_path = f"output/crime_maps/{safe_name}_map.html"
+            m.save(map_path)
+        except Exception as e:
+            logging.warning(f"Could not generate map for {crime_type}: {e}")
+        
+        # Cleanup
+        del model
+        gc.collect()
+        
+        return {'crime_type': crime_type, 'status': 'success'}
+        
+    except Exception as e:
+        logging.exception(f"Error processing {crime_type}: {e}")
+        return {'crime_type': crime_type, 'status': 'error', 'error': str(e)}
+
+# ============================================================================
 # MAIN FORECASTING PIPELINE
 # ============================================================================
 
@@ -372,201 +831,49 @@ if __name__ == "__main__":
     all_metrics = []
 
     # ========================================================================
-    # PROCESS EACH DISTRICT
+    # PROCESS DISTRICTS CONCURRENTLY
     # ========================================================================
-    for district in districts:
-        print(f"\n{'='*70}")
-        print(f"DISTRICT: {district}")
-        print(f"{'='*70}")
+    # Prepare arguments for worker functions
+    district_args = [
+        (district, daily_counts, config, train_start, train_end, test_end, future_start, future_end)
+        for district in districts
+    ]
+    
+    # Limit workers to prevent memory exhaustion
+    max_workers = min(8, multiprocessing.cpu_count())
+    print(f"\nUsing {max_workers} parallel workers for district processing")
+    
+    successful_districts = 0
+    failed_districts = 0
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_district = {
+            executor.submit(process_district_forecast, args): args[0] 
+            for args in district_args
+        }
         
-        # Filter data for this district
-        df = daily_counts[daily_counts['DISTRICT'] == district].copy()
-
-        # Prophet requires 'ds' (date) and 'y' (value) columns
-        df.rename(columns={'DATE': 'ds', 'COUNT': 'y'}, inplace=True)
-        df['ds'] = pd.to_datetime(df['ds'])
-
-        # Filter data from train_start
-        df = df[df['ds'] >= train_start]
-
-        # Split data into training and testing
-        train_df = df[(df['ds'] >= train_start) & (df['ds'] <= train_end)]
-        test_df = df[(df['ds'] > train_end) & (df['ds'] <= test_end)]
-
-        print(f"Data: {len(train_df)} training samples, {len(test_df)} test samples")
-
-        # Validate training data
-        min_records = config['model'].get('min_training_records', 10)
-        try:
-            validate_training_data(
-                daily_counts[daily_counts['DISTRICT'] == district], 
-                train_start, 
-                train_end, 
-                min_records
-            )
-        except ValueError as e:
-            print(f"❌ Skipping district {district}: {e}")
-            continue
-
-        # Handle outliers in training data
-        print("\nOutlier detection:")
-        train_df, outlier_count = detect_and_handle_outliers(train_df, threshold=3)
-
-        # ====================================================================
-        # STEP 1: TRAIN INITIAL MODEL ON TRAINING DATA
-        # ====================================================================
-        print(f"\nStep 1: Training initial model on training data...")
-        
-        model = Prophet(
-            yearly_seasonality=config['model'].get('yearly_seasonality', True),
-            weekly_seasonality=config['model'].get('weekly_seasonality', True),
-            daily_seasonality=config['model'].get('daily_seasonality', False),
-            changepoint_prior_scale=config['model'].get('changepoint_prior_scale', 0.05),
-            seasonality_prior_scale=config['model'].get('seasonality_prior_scale', 10.0)
-        )
-        
-        # Add holiday effects if configured
-        if config['model'].get('include_holidays', True):
-            model.add_country_holidays(country_name='US')
-            print("  Added US holiday effects")
-        
-        model.fit(train_df)
-        print("  ✓ Model trained")
-
-        # ====================================================================
-        # STEP 2: EVALUATE ON TEST SET
-        # ====================================================================
-        if not test_df.empty:
-            print(f"\nStep 2: Evaluating on test set...")
-            
-            # Calculate baseline performance
-            baselines = baseline_forecast(train_df, test_df)
-            print(f"\n  Baseline MAE scores:")
-            for name, mae in baselines.items():
-                print(f"    {name:12s}: {mae:.2f}")
-            
-            # Generate forecast for test period
-            forecast_days_test = (test_df['ds'].max() - train_end).days
-            if forecast_days_test < 1:
-                forecast_days_test = 30
-            
-            future_test = model.make_future_dataframe(periods=forecast_days_test)
-            forecast_test = model.predict(future_test)
-            
-            # Comprehensive evaluation
-            metrics = evaluate_model_comprehensive(test_df, forecast_test)
-            
-            if metrics:
-                test_period_str = f"{train_end.strftime('%Y-%m-%d')} to {test_end.strftime('%Y-%m-%d')}"
-                print(f"\n  Prophet Model Performance ({test_period_str}):")
-                print(f"    MAE:       {metrics['mae']:.2f} crimes/day")
-                print(f"    RMSE:      {metrics['rmse']:.2f} crimes/day")
-                print(f"    MAPE:      {metrics['mape']:.2f}%")
-                print(f"    Coverage:  {metrics['coverage']*100:.1f}% (95% prediction interval)")
-                print(f"    Samples:   {metrics['test_samples']}")
-                
-                # Compare to baseline
-                improvement = (baselines['naive'] - metrics['mae']) / baselines['naive'] * 100
-                print(f"\n  Improvement over naive baseline: {improvement:.1f}%")
-                
-                if improvement < 0:
-                    print(f"  ⚠️  WARNING: Model performs worse than naive baseline!")
-                
-                # Store metrics for summary
-                metrics['district'] = district
-                metrics['baseline_naive_mae'] = baselines['naive']
-                metrics['improvement_pct'] = improvement
-                all_metrics.append(metrics)
-                
-                # Save test results
-                merged = pd.merge(
-                    test_df, 
-                    forecast_test[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], 
-                    on='ds', 
-                    how='left'
-                )
-                merged.to_csv(f"output/forecasts/{district}_test_results.csv", index=False)
-                print(f"  ✓ Test results saved")
-        else:
-            print(f"\n  No test data available after {train_end.strftime('%Y-%m-%d')}")
-            metrics = None
-
-        # Save initial model and forecast
-        forecast_test.to_csv(f"output/forecasts/{district}_forecast.csv", index=False)
-        joblib.dump(model, f"output/forecasts/{district}_initial_model.joblib")
-
-        # ====================================================================
-        # STEP 3: RETRAIN ON FULL DATASET FOR PRODUCTION FORECAST
-        # ====================================================================
-        print(f"\nStep 3: Retraining on FULL dataset (train + test) for production forecast...")
-        
-        # Combine all data up to test_end
-        full_train_df = df[df['ds'] <= test_end]
-        full_train_df, _ = detect_and_handle_outliers(full_train_df, threshold=3)
-        
-        print(f"  Training final model on {len(full_train_df)} samples")
-        
-        # Train final production model
-        final_model = Prophet(
-            yearly_seasonality=config['model'].get('yearly_seasonality', True),
-            weekly_seasonality=config['model'].get('weekly_seasonality', True),
-            daily_seasonality=config['model'].get('daily_seasonality', False),
-            changepoint_prior_scale=config['model'].get('changepoint_prior_scale', 0.05),
-            seasonality_prior_scale=config['model'].get('seasonality_prior_scale', 10.0)
-        )
-        
-        if config['model'].get('include_holidays', True):
-            final_model.add_country_holidays(country_name='US')
-        
-        final_model.fit(full_train_df)
-        print("  ✓ Final model trained")
-
-        # ====================================================================
-        # STEP 4: GENERATE FUTURE FORECAST
-        # ====================================================================
-        print(f"\nStep 4: Generating future forecast...")
-        
-        total_days_future = (future_end - test_end).days
-        if total_days_future < 1:
-            print("  ❌ ERROR: Future end date is before test end date")
-            continue
-
-        future_all = final_model.make_future_dataframe(periods=total_days_future)
-        forecast_future = final_model.predict(future_all)
-
-        # Filter forecast to future period only
-        forecast_2months = forecast_future[
-            (forecast_future['ds'] >= future_start) & 
-            (forecast_future['ds'] <= future_end)
-        ]
-        
-        future_period_str = f"{future_start.strftime('%Y-%m-%d')} to {future_end.strftime('%Y-%m-%d')}"
-        print(f"\n  Future Forecast Summary ({future_period_str}):")
-        print(f"    Mean:   {forecast_2months['yhat'].mean():.1f} crimes/day")
-        print(f"    Median: {forecast_2months['yhat'].median():.1f} crimes/day")
-        print(f"    Range:  {forecast_2months['yhat'].min():.1f} - {forecast_2months['yhat'].max():.1f}")
-        print(f"    Total:  {forecast_2months['yhat'].sum():.0f} crimes (predicted)")
-
-        # Save production forecast and model
-        forecast_2months.to_csv(f"output/forecasts/{district}_2months_future_forecast.csv", index=False)
-        joblib.dump(final_model, f"output/forecasts/{district}_final_model.joblib")
-        
-        # Save metrics
-        if metrics:
-            metrics_df = pd.DataFrame([{
-                'district': district,
-                'mae': metrics['mae'],
-                'rmse': metrics['rmse'],
-                'mape': metrics['mape'],
-                'coverage': metrics['coverage'],
-                'test_samples': metrics['test_samples'],
-                'baseline_naive_mae': metrics['baseline_naive_mae'],
-                'improvement_pct': metrics['improvement_pct']
-            }])
-            metrics_df.to_csv(f"output/forecasts/{district}_metrics.csv", index=False)
-        
-        print(f"  ✓ Future forecast saved")
-        print(f"  ✓ Final model saved")
+        # Process results as they complete
+        for future in as_completed(future_to_district):
+            district = future_to_district[future]
+            try:
+                result = future.result()
+                if result['status'] == 'success':
+                    successful_districts += 1
+                    print(f"✓ Completed: {district}")
+                    if 'metrics' in result and result['metrics']:
+                        all_metrics.append(result['metrics'])
+                elif result['status'] == 'skipped':
+                    print(f"⚠️  Skipped: {district} - {result.get('error', result.get('reason', 'Unknown'))}")
+                else:
+                    failed_districts += 1
+                    print(f"❌ Failed: {district} - {result.get('error', 'Unknown error')}")
+            except Exception as e:
+                failed_districts += 1
+                logging.exception(f"Exception processing district {district}: {e}")
+                print(f"❌ Exception: {district} - {e}")
+    
+    print(f"\nDistrict Processing Summary: {successful_districts} successful, {failed_districts} failed")
 
     # ========================================================================
     # SUMMARY REPORT
@@ -600,4 +907,22 @@ if __name__ == "__main__":
     
     print(f"\n{'='*70}")
     print("FORECASTING COMPLETE")
+    print(f"{'='*70}")
+    
+    # ========================================================================
+    # CRIME-TYPE ANALYSIS GENERATION
+    # ========================================================================
+    print(f"\n{'='*70}")
+    print("GENERATING CRIME-TYPE ANALYSES")
+    print(f"{'='*70}")
+    
+    try:
+        generate_crime_type_analyses()
+    except Exception as e:
+        print(f"\n⚠️  WARNING: Error generating crime-type analyses: {e}")
+        logging.exception("Error in generate_crime_type_analyses")
+        print("District forecasts completed successfully, but crime-type analyses failed.")
+    
+    print(f"\n{'='*70}")
+    print("ALL FORECASTING COMPLETE")
     print(f"{'='*70}")

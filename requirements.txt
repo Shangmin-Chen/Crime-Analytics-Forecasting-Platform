@@ -1,4 +1,4 @@
-# Core data science libraries - original tested versions
+# Core data science libraries
 pandas==2.0.3
 numpy==1.26.4
 matplotlib==3.9.2
@@ -17,8 +17,8 @@ openpyxl==3.1.2
 requests>=2.31.0
 pyyaml>=6.0
 
-# Dependencies for geopandas and contextily
+# Geospatial dependencies (using >= for Python 3.12 compatibility)
 shapely==2.0.6
 fiona>=1.9.5
-pyproj==3.6.0
-rasterio==1.3.8
+pyproj>=3.6.1
+rasterio>=1.3.8

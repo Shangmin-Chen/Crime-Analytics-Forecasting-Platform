@@ -30,10 +30,127 @@ import gc
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import folium
 from folium.plugins import HeatMap
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
+
+# ============================================================================
+# IMPROVED COMPONENT PLOTTING
+# ============================================================================
+
+def plot_components_with_proper_labels(model, forecast, crime_type=None):
+    """
+    Create forecast components plot with human-readable labels.
+    
+    Args:
+        model: Fitted Prophet model
+        forecast: Forecast DataFrame
+        crime_type: Optional crime type name for title
+    
+    Returns:
+        matplotlib.figure.Figure: Figure with properly labeled components
+    """
+    import matplotlib.dates as mdates
+    
+    # Determine which components exist
+    components = ['trend']
+    if model.train_holiday_names is not None and 'holidays' in forecast.columns:
+        components.append('holidays')
+    
+    # Check for seasonalities
+    if 'yearly' in forecast.columns:
+        components.append('yearly')
+    if 'weekly' in forecast.columns:
+        components.append('weekly')
+    if 'daily' in forecast.columns:
+        components.append('daily')
+    
+    # Create subplots
+    n_components = len(components)
+    fig, axes = plt.subplots(n_components, 1, figsize=(10, 3 * n_components))
+    
+    # Handle single component case
+    if n_components == 1:
+        axes = [axes]
+    
+    for i, component in enumerate(components):
+        ax = axes[i]
+        
+        if component == 'trend':
+            # Plot trend component
+            ax.plot(forecast['ds'], forecast['trend'], color='#0072B2', linewidth=2)
+            ax.set_ylabel('Crime Count\n(Trend)', fontsize=11, fontweight='bold')
+            ax.set_xlabel('Date', fontsize=11, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            
+            # Format x-axis with proper dates
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+            ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+            
+        elif component == 'weekly':
+            # Plot weekly seasonality
+            days_of_week = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 
+                          'Thursday', 'Friday', 'Saturday']
+            
+            # Get weekly component values (one cycle)
+            weekly_vals = forecast['weekly'].iloc[:7].values
+            
+            ax.plot(days_of_week, weekly_vals, color='#0072B2', linewidth=2, marker='o')
+            ax.axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+            ax.set_ylabel('Effect on\nCrime Count', fontsize=11, fontweight='bold')
+            ax.set_xlabel('Day of Week', fontsize=11, fontweight='bold')
+            ax.grid(True, alpha=0.3, axis='y')
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+            
+        elif component == 'yearly':
+            # Plot yearly seasonality
+            # Extract one year cycle
+            yearly_data = forecast[['ds', 'yearly']].copy()
+            yearly_data['day_of_year'] = yearly_data['ds'].dt.dayofyear
+            
+            # Get unique days of year (removes duplicates from multi-year data)
+            yearly_avg = yearly_data.groupby('day_of_year')['yearly'].mean().reset_index()
+            
+            # Create month labels for x-axis
+            month_starts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+            month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+            
+            ax.plot(yearly_avg['day_of_year'], yearly_avg['yearly'], 
+                   color='#0072B2', linewidth=2)
+            ax.axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+            ax.set_ylabel('Effect on\nCrime Count', fontsize=11, fontweight='bold')
+            ax.set_xlabel('Month of Year', fontsize=11, fontweight='bold')
+            ax.set_xticks(month_starts)
+            ax.set_xticklabels(month_names)
+            ax.grid(True, alpha=0.3, axis='y')
+            ax.set_xlim(1, 365)
+            
+        elif component == 'holidays':
+            # Plot holiday effects if present
+            holiday_data = forecast[forecast['holidays'].notna()]
+            if not holiday_data.empty:
+                ax.scatter(holiday_data['ds'], holiday_data['holidays'], 
+                          color='#D55E00', alpha=0.6, s=50)
+                ax.axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+                ax.set_ylabel('Holiday Effect\non Crime Count', fontsize=11, fontweight='bold')
+                ax.set_xlabel('Date', fontsize=11, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+                
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+                ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    # Add overall title if crime type provided
+    if crime_type:
+        fig.suptitle(f'Forecast Components: {crime_type}', 
+                    fontsize=14, fontweight='bold', y=0.995)
+    
+    plt.tight_layout()
+    return fig
 
 # ============================================================================
 # DEPENDENCY CHECKS
@@ -691,9 +808,9 @@ def process_crime_type_analysis(args):
         forecast_path = f"output/crime_forecasts/{safe_name}_forecast.csv"
         forecast.to_csv(forecast_path, index=False)
         
-        # Generate and save forecast components plot
+        # Generate and save forecast components plot with proper labels
         try:
-            fig = model.plot_components(forecast)
+            fig = plot_components_with_proper_labels(model, forecast, crime_type)
             components_path = f"output/crime_forecasts/{safe_name}_components.png"
             fig.savefig(components_path, bbox_inches='tight', dpi=150)
             plt.close(fig)

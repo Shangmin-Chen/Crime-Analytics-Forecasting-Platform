@@ -1306,14 +1306,15 @@ def main():
         run_district_analysis()
     else:
         run_crime_type_analysis()
-        
-        # Footer
-        st.markdown("---")
-        st.caption("""
-        **Boston Crime Analysis & Forecasting Dashboard** | 
-        Data Source: [Boston.gov CKAN Data API](https://data.boston.gov/api/3/action/datastore_search) |
-        For questions or issues, refer to the Help & FAQ section in the sidebar.
-        """)
+    
+    # Footer
+    st.markdown("---")
+    st.caption("""
+    **Boston Crime Analysis & Forecasting Dashboard** | 
+    Data Source: [Boston.gov CKAN Data API](https://data.boston.gov/api/3/action/datastore_search) |
+    **Project Repository**: [CrimeMapper-Boston](https://github.com/Shangmin-Chen/CrimeMapper-Boston) |
+    For questions or issues, refer to the Help & FAQ section in the sidebar.
+    """)
 
 if __name__ == "__main__":
     main()
